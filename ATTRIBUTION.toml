@@ -176,6 +176,17 @@ usage = "Kazakh UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
 sha256 = "0a4e6e85e4879e5fec6fbc08ac2f3ff0c70350ae9002fad1cfac0305fccb9fdb"
 
 [[asset]]
+path = "crates/ui-egui/src/i18n/ko.tsv"
+title = "Korean interface translation catalog"
+author = "Achmage PDFCraft contributors"
+source = "Contributor-original: clean-room translations of PdfCraft's English UI labels, no proprietary localisation resources"
+licence = "MIT OR Apache-2.0"
+licence_file = "LICENSE-MIT"
+kind = "translation"
+usage = "Korean UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "8d38e6694e70bbb3a85c9bc6dc21b6090f1d8c0bb88ac697d5d4b28333e5e254"
+
+[[asset]]
 path = "crates/ui-egui/src/i18n/ja.tsv"
 title = "Japanese interface translation catalog"
 author = "PdfCraft contributors"
