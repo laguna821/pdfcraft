@@ -279,7 +279,18 @@ pub fn undrawable_text(d: &Dict) -> Option<(&'static str, char)> {
         b"Redact" => ("the redaction's overlay text", text(b"OverlayText")?),
         _ => return None,
     };
-    Some((what, first_undrawable(&text)?))
+    let c = first_undrawable(&text)?;
+    // Achmage PDFCraft: a text box whose text Pretendard draws is drawn as its outlines.
+    if what == "the comment's text" && outline_text(&text) {
+        return None;
+    }
+    Some((what, c))
+}
+
+/// Achmage PDFCraft: whether a text box's text goes in as filled Pretendard outlines rather than
+/// Helvetica (see [`pdfcraft_fonts::needs_korean_outlines`]).
+pub fn outline_text(text: &str) -> bool {
+    pdfcraft_fonts::needs_korean_outlines(text)
 }
 
 /// Draw the normal appearance of an annotation, or `None` if this subtype/variant isn't supported.
@@ -692,6 +703,25 @@ pub fn build(d: &Dict) -> Option<Stream> {
             let pad = 2.0 + bw;
             let width = (rect[2] - rect[0] - 2.0 * pad).max(1.0);
             let q = d.int(b"Q").unwrap_or(0);
+            if outline_text(&text) {
+                c.push_str(&format!("q {} {} {} {} re W n\n{}", n(rect[0]), n(rect[1]), n(rect[2] - rect[0]), n(rect[3] - rect[1]), rg(text_color)));
+                let mut y = rect[3] - pad - size * 0.9;
+                for line in pdfcraft_fonts::wrap_with(&text, size, width, pdfcraft_fonts::korean_outline_width) {
+                    if y < rect[1] - size {
+                        break;
+                    }
+                    let lw = pdfcraft_fonts::korean_outline_width(&line, size);
+                    let x = match q {
+                        1 => rect[0] + pad + (width - lw) / 2.0,
+                        2 => rect[2] - pad - lw,
+                        _ => rect[0] + pad,
+                    };
+                    pdfcraft_fonts::korean_outline_path(&mut c, &line, x, y, size, n);
+                    y -= size * 1.2;
+                }
+                c.push_str("Q\n");
+                return Some(form(full, c.as_bytes(), res));
+            }
             c.push_str(&format!(
                 "{} {} {} {} re W n\nBT\n/Helv {} Tf\n{}",
                 n(rect[0]),

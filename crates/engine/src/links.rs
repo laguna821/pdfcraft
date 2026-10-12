@@ -9,7 +9,7 @@ pub const APP: &str = "pdfcraft";
 pub const DISCORD: &str = "https://discord.gg/artcraft";
 pub const WEBSITE: &str = "https://getartcraft.com";
 pub const APP_PAGE: &str = "https://getartcraft.com/apps/pdfcraft";
-pub const GITHUB: &str = "https://github.com/storytold/pdfcraft";
+pub const GITHUB: &str = "https://github.com/laguna821/pdfcraft";
 
 /// A link and the registry command that opens it.
 #[derive(Clone, Copy, Debug)]
@@ -342,7 +342,8 @@ mod tests {
     #[test]
     fn urls_follow_the_artcraft_scheme() {
         assert_eq!(super::APP_PAGE, format!("{}/apps/{}", super::WEBSITE, super::APP));
-        assert_eq!(super::GITHUB, format!("https://github.com/storytold/{}", super::APP));
+        // Achmage PDFCraft: the fork's own repository.
+        assert_eq!(super::GITHUB, format!("https://github.com/laguna821/{}", super::APP));
         for l in super::LINKS {
             assert!(l.url.starts_with("https://"), "{}", l.url);
             assert!(crate::commands::command(l.command).is_some(), "{} is a registered command", l.command);

@@ -404,6 +404,38 @@ fn japanese_choices_use_the_unicode_cid_font() {
     assert!(need_appearances(&doc));
 }
 
+/// Achmage PDFCraft: Korean in a field whose font can't show it (an Identity-H subset, as Korean
+/// government forms have, or plain Helvetica) is drawn from the bundled Pretendard's outlines,
+/// not as `?`, and the widget isn't marked undrawn.
+#[test]
+fn korean_values_are_drawn_from_pretendard_outlines() {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [7 0 R 8 0 R] >>".into(),
+        "<< /Fields [7 0 R 8 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 5 0 R /Emb 6 0 R >> >> >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into(),
+        "<< /Type /Font /Subtype /Type0 /BaseFont /ABCDEF+MalgunGothic /Encoding /Identity-H /DescendantFonts [] >>".into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /DA (/Emb 10 Tf 0 g) /Rect [50 500 200 520] /P 3 0 R >>".into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (memo) /Ff 4096 /DA (/Helv 10 Tf 0 g) /Rect [50 600 200 680] /P 3 0 R >>".into(),
+    ];
+    let mut doc = document(&objs);
+    set_value(&mut doc, "name", &FieldValue::Text("홍길동".into())).unwrap();
+    set_value(&mut doc, "memo", &FieldValue::Text("한글 메모 입력란입니다. 여러 줄로 나뉩니다.".into())).unwrap();
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    assert_eq!(field(&all, "name").value, ["홍길동"]);
+    for name in ["name", "memo"] {
+        let w = &field(&all, name).widgets[0];
+        let n = doc.get(w.obj).as_dict().unwrap().get(b"AP").unwrap().as_dict().unwrap().reference(b"N").unwrap();
+        let Object::Stream(s) = &*doc.get(n) else { panic!() };
+        let text = String::from_utf8_lossy(&s.decoded().unwrap()).into_owned();
+        assert!(!text.contains("(?"), "{name}: {text}");
+        assert!(text.matches(" m\n").count() > 5 && text.contains("f\n"), "{name}: outlines filled");
+    }
+    assert!(undrawn_fields(&doc).is_empty());
+}
+
 /// Text a field's font can't hold is kept, as Acrobat keeps it: the value is stored as typed, the
 /// appearance draws `?` for those characters, the widget is marked with the first one, and the
 /// form asks other viewers to redraw it (`/NeedAppearances`). Drawable text clears the mark.

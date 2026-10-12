@@ -31,3 +31,9 @@ Later rendering errors, device loss, and non-winit renderer construction are unc
 Temporary: hayro is the bootstrap renderer and lopdf the bootstrap inspector (ADR-0004); M2.6 replaces them with our own devices and `cos`/`model`.
 
 Text extraction: hayro-interpret exposes `OutlineGlyph::is_vertical` from a Type0 font’s CMap writing mode. PdfCraft follows negative glyph-space y for WMode 1 so upright vertical columns can be searched (#126).
+
+## Achmage PDFCraft patches
+
+| Crate | Patch | Test |
+|---|---|---|
+| hayro-interpret | `font/cid.rs`: an embedded Type 0 font whose encoding is a named Adobe-Korea1 CMap (`KSC-EUC-H`, `KSCms-UHC-H`, `UniKS-UCS2-H`, …) and that has no `/ToUnicode` takes Adobe-Korea1-UCS2 for its text, as fallback fonts already did, so Korean government and HWP-exported PDFs copy and search | `crates/render` Korean tests |

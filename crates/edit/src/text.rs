@@ -997,12 +997,16 @@ fn needs_type3(text: &str) -> bool {
 const JAPANESE_FONT_NAME: &str = "PCJapanese";
 /// The `/Name` of the Type 3 fonts generated for Hebrew text.
 const HEBREW_FONT_NAME: &str = "PCHebrew";
+/// The `/Name` of the Type 3 fonts generated for Korean text (Achmage PDFCraft, Pretendard).
+const KOREAN_FONT_NAME: &str = "PCKorean";
 
 /// Whether `font` is one of those generated fonts (Japanese or Hebrew): a replacement longer than
 /// one of them is split across several, which read back as one line (see [`same_font`]).
 fn is_type3_fallback(font: &Dict) -> bool {
     font.name(b"Subtype") == Some(b"Type3")
-        && font.name(b"Name").is_some_and(|n| n == JAPANESE_FONT_NAME.as_bytes() || n == HEBREW_FONT_NAME.as_bytes())
+        && font
+            .name(b"Name")
+            .is_some_and(|n| n == JAPANESE_FONT_NAME.as_bytes() || n == HEBREW_FONT_NAME.as_bytes() || n == KOREAN_FONT_NAME.as_bytes())
 }
 
 /// Whether a run shown in `font` (a resource name, and the Japanese or Hebrew fallback face it subsets, if
@@ -1108,6 +1112,11 @@ fn unicode_hex(ch: char) -> String {
     encoded.iter().map(|u| format!("{u:04X}")).collect()
 }
 
+/// Hangul syllables, jamo and compatibility jamo.
+pub(crate) fn is_hangul(c: char) -> bool {
+    matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{D7B0}'..='\u{D7FF}')
+}
+
 /// This build has no Japanese face to draw replacement text with.
 fn no_japanese_font() -> EditError {
     EditError::Invalid(
@@ -1135,7 +1144,13 @@ fn no_hebrew_font() -> EditError {
 /// Hebrew face first (its Latin and digits too, so a line keeps one look), then the Japanese
 /// faces for anything it lacks; other text takes the Japanese faces, as before.
 fn type3_faces(text: &str, family: crate::added::Family, bold: bool) -> Result<(Vec<&'static CraftFont>, bool), EditError> {
-    let japanese = pdfcraft_fonts::document_japanese_fonts_for_style(family == crate::added::Family::Times, bold);
+    let serif = family == crate::added::Family::Times;
+    let japanese = pdfcraft_fonts::document_japanese_fonts_for_style(serif, bold);
+    // Achmage PDFCraft: Korean text takes the bundled Pretendard (its Latin and digits too, so a
+    // line keeps one look), then each character it lacks (Hanja, kana) from the next face.
+    if text.chars().any(is_hangul) && !text.chars().any(crate::bidi::is_hebrew) {
+        return Ok((pdfcraft_fonts::document_korean_fonts_for_style(serif, bold).into_iter().chain(japanese).collect(), true));
+    }
     if !text.chars().any(crate::bidi::is_hebrew) {
         return Ok((japanese, false));
     }
@@ -1235,7 +1250,17 @@ fn add_type3_font(doc: &mut Document, fonts_res: &mut Dict, face: &CraftFont, he
     let mut font = Dict::new();
     font.set(b"Type".to_vec(), Object::name("Font"));
     font.set(b"Subtype".to_vec(), Object::name("Type3"));
-    font.set(b"Name".to_vec(), Object::name(if hebrew { HEBREW_FONT_NAME } else { JAPANESE_FONT_NAME }));
+    let korean = face.covers("Kore");
+    font.set(
+        b"Name".to_vec(),
+        Object::name(if korean {
+            KOREAN_FONT_NAME
+        } else if hebrew {
+            HEBREW_FONT_NAME
+        } else {
+            JAPANESE_FONT_NAME
+        }),
+    );
     let mut descriptor = Dict::new();
     descriptor.set(b"Type".to_vec(), Object::name("FontDescriptor"));
     descriptor.set(b"FontName".to_vec(), Object::name(&format!("{}-{}", face.family, face.style).replace(' ', "")));
@@ -1255,7 +1280,13 @@ fn add_type3_font(doc: &mut Document, fonts_res: &mut Dict, face: &CraftFont, he
     font.set(b"Encoding".to_vec(), Object::Dict(encoding));
     font.set(b"CharProcs".to_vec(), Object::Dict(charprocs));
     font.set(b"ToUnicode".to_vec(), Object::Ref(cmap_ref));
-    let prefix = if hebrew { "PCHe" } else { "PCJp" };
+    let prefix = if korean {
+        "PCKo"
+    } else if hebrew {
+        "PCHe"
+    } else {
+        "PCJp"
+    };
     let mut name = String::from(prefix);
     let mut suffix = 0usize;
     while fonts_res.contains(name.as_bytes()) {

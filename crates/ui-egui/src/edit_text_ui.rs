@@ -944,6 +944,16 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
     // A font definition becomes active at the start of the next egui pass. Keep the source
     // raster visible until then instead of flashing an unrelated interface face.
     if !ctx.fonts(|f| ed.fonts.values().all(|name| f.definitions().families.contains_key(&FontFamily::Name(name.clone().into())))) {
+        // Achmage PDFCraft: a font reload while the field is focused must not cost it its focus:
+        // a pass without the widget drops egui's focus, which ends an IME composition (a Hangul
+        // syllable half typed) and applies the edit. Keep the field's id alive for this pass.
+        let input = egui::Id::new("edit-text-line-input");
+        if ctx.memory(|m| m.has_focus(input)) {
+            let rect = ed.rect;
+            egui::Area::new(egui::Id::new("edit-text-line")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
+                ui.interact(rect, input, egui::Sense::focusable_noninteractive());
+            });
+        }
         ctx.request_repaint();
         return None;
     }

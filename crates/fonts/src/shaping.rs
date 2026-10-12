@@ -27,6 +27,10 @@ pub struct ShapedCluster {
 pub enum ShapedScript {
     Arabic,
     Thai,
+    /// Korean (Achmage PDFCraft): the bundled Pretendard Regular.
+    Korean,
+    /// Korean in bold: the bundled Pretendard Bold.
+    KoreanBold,
 }
 
 impl ShapedScript {
@@ -34,6 +38,8 @@ impl ShapedScript {
         match self {
             Self::Arabic => crate::document_arabic_font(),
             Self::Thai => crate::document_thai_font(),
+            Self::Korean => crate::pretendard("Regular"),
+            Self::KoreanBold => crate::pretendard("Bold"),
         }
     }
 }
@@ -41,9 +47,13 @@ impl ShapedScript {
 fn face(script: ShapedScript) -> Option<&'static (FontRef<'static>, ShaperData)> {
     static FACE: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
     static THAI: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
+    static KOREAN: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
+    static KOREAN_BOLD: OnceLock<Option<(FontRef<'static>, ShaperData)>> = OnceLock::new();
     let cache = match script {
         ShapedScript::Arabic => &FACE,
         ShapedScript::Thai => &THAI,
+        ShapedScript::Korean => &KOREAN,
+        ShapedScript::KoreanBold => &KOREAN_BOLD,
     };
     cache
         .get_or_init(|| {
@@ -70,6 +80,17 @@ pub fn thai_has(c: char) -> bool {
     face(ShapedScript::Thai).is_some_and(|(font, _)| font.charmap().map(c).is_some())
 }
 
+/// Whether the bundled Korean face (Pretendard) has a glyph for `c`.
+pub fn korean_has(c: char) -> bool {
+    face(ShapedScript::Korean).is_some_and(|(font, _)| font.charmap().map(c).is_some_and(|g| g.to_u32() != 0))
+}
+
+/// Shape Korean (and the Latin, digits and punctuation between it) with the bundled Pretendard,
+/// grapheme by grapheme so conjoining jamo stay one cluster with their text exactly once.
+pub fn shape_korean(text: &str, bold: bool) -> Result<Vec<ShapedCluster>, GlyphError> {
+    shape_script(text, false, if bold { ShapedScript::KoreanBold } else { ShapedScript::Korean })
+}
+
 /// Shape Thai with grapheme clusters so Sara Am decomposition and stacked marks keep their
 /// original Unicode text exactly once, including when wrapped or copied from the saved PDF.
 pub fn shape_thai(text: &str) -> Result<Vec<ShapedCluster>, GlyphError> {
@@ -86,11 +107,12 @@ fn shape_script(text: &str, rtl: bool, kind: ShapedScript) -> Result<Vec<ShapedC
     buffer.set_script(match kind {
         ShapedScript::Arabic => script::ARABIC,
         ShapedScript::Thai => script::THAI,
+        ShapedScript::Korean | ShapedScript::KoreanBold => script::HANGUL,
     });
     // Preserve the historical Arabic per-character mapping; Thai marks stay with their base.
     buffer.set_cluster_level(match kind {
         ShapedScript::Arabic => BufferClusterLevel::Characters,
-        ShapedScript::Thai => BufferClusterLevel::MonotoneGraphemes,
+        ShapedScript::Thai | ShapedScript::Korean | ShapedScript::KoreanBold => BufferClusterLevel::MonotoneGraphemes,
     });
     let shaped = shaper.shape(buffer, ShapeOptions::new());
     // Clusters are byte offsets into `text`; a cluster shows the characters up to the next one.

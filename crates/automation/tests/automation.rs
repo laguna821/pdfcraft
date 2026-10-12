@@ -2290,9 +2290,11 @@ fn creating_from_text_refuses_what_the_font_cannot_draw() {
     // WinAnsi characters, line breaks and tabs are still fine.
     let d = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Price: 5 € at café\r\n\tnext\u{c}page two" }))["doc"].as_u64().unwrap();
     assert_eq!(page_text(&mut a, d).len(), 2);
-    // #959: page_add_text refuses it too.
+    // Achmage PDFCraft: page_add_text sets Korean in the bundled Pretendard (upstream refused it,
+    // #959), and the text reads back.
     let doc = ok(&mut a, "doc_create", json!({ "from": "blank" }))["doc"].as_u64().unwrap();
-    refused(a.call("page_add_text", &json!({ "doc": doc, "page": 1, "text": "ABC 제안서 시험", "at": [20, 20] })));
+    ok(&mut a, "page_add_text", json!({ "doc": doc, "page": 1, "text": "ABC 제안서 시험", "at": [20, 20] }));
+    assert!(page_text(&mut a, doc).concat().contains("제안서"));
 }
 
 #[test]

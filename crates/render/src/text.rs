@@ -49,6 +49,19 @@ pub fn fold_case(s: &str) -> String {
     out
 }
 
+/// A precomposed Hangul syllable as its conjoining jamo (Unicode's algorithmic decomposition);
+/// any other character as itself.
+fn hangul_jamo(c: char) -> impl Iterator<Item = char> {
+    let s = u32::from(c).wrapping_sub(0xAC00);
+    let parts = if s < 11_172 {
+        let (l, v, t) = (s / 588, (s % 588) / 28, s % 28);
+        [char::from_u32(0x1100 + l), char::from_u32(0x1161 + v), if t == 0 { None } else { char::from_u32(0x11A7 + t) }]
+    } else {
+        [Some(c), None, None]
+    };
+    parts.into_iter().flatten()
+}
+
 /// The text of one page, in content order, with line structure.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageText {
@@ -104,7 +117,9 @@ impl PageText {
             return Vec::new();
         }
         let fold = |s: &str| if case_sensitive { s.to_string() } else { fold_case(s) };
-        let needle: Vec<char> = fold(needle).split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+        // Achmage PDFCraft: Hangul is compared as jamo, so a PDF that stores a syllable as
+        // conjoining jamo (decomposed, NFD) still matches the syllable typed in the find box.
+        let needle: Vec<char> = fold(needle).split_whitespace().collect::<Vec<_>>().join(" ").chars().flat_map(hangul_jamo).collect();
         if needle.is_empty() {
             return Vec::new();
         }
@@ -114,7 +129,7 @@ impl PageText {
             if i > 0 && (self.space_before[i] || self.line_of[i] != self.line_of[i - 1]) && chars.last().is_some_and(|c| c.0 != ' ') {
                 chars.push((' ', i));
             }
-            for c in fold(&g.text).chars() {
+            for c in fold(&g.text).chars().flat_map(hangul_jamo) {
                 let c = if c.is_whitespace() { ' ' } else { c };
                 // The query collapses a run of whitespace to one space, so collapse the page too.
                 if c == ' ' && chars.last().is_some_and(|k| k.0 == ' ') {
@@ -664,6 +679,11 @@ fn is_rtl(c: char) -> bool {
 /// (Indic, Thai, Lao, Myanmar, Khmer): never infer a space inside a tight cluster.
 fn is_complex(c: char) -> bool {
     matches!(c as u32, 0x0300..=0x036F | 0x0900..=0x0DFF | 0x0E00..=0x0EFF | 0x1000..=0x109F | 0x1780..=0x17FF)
+}
+
+/// Hangul syllables and jamo: written with spaces between words, unlike Chinese and Japanese.
+fn is_hangul(c: char) -> bool {
+    matches!(c as u32, 0xAC00..=0xD7AF | 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xD7B0..=0xD7FF)
 }
 
 fn is_cjk(c: char) -> bool {
@@ -1255,9 +1275,15 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                 let &[p, c] = pair else { continue };
                 let gap = glyphs[c].rect[0] - glyphs[p].rect[2];
                 let (pt, ct) = (&glyphs[p].text, &glyphs[c].text);
-                let cjk = pt.chars().any(is_cjk) && ct.chars().any(is_cjk) && gap < h * 0.5;
+                // Achmage PDFCraft: Korean puts spaces between words, often as positioning
+                // rather than space glyphs (HWP and Word exports), so Hangul next to Hangul or
+                // Han takes the ordinary word-gap test; a new run alone (one syllable per run in
+                // some exports) is no word break there.
+                let korean = (pt.chars().any(is_hangul) && ct.chars().any(|ch| is_hangul(ch) || is_cjk(ch)))
+                    || (ct.chars().any(is_hangul) && pt.chars().any(is_cjk));
+                let cjk = !korean && pt.chars().any(is_cjk) && ct.chars().any(is_cjk) && gap < h * 0.5;
                 let tight_cluster = (pt.chars().any(is_complex) || ct.chars().any(is_complex)) && gap < h * 0.6;
-                let run_start = sc.breaks.binary_search(&c).is_ok();
+                let run_start = !korean && sc.breaks.binary_search(&c).is_ok();
                 if let Some(space) = spaces.get_mut(w + 1) {
                     *space = (gap > threshold || run_start) && !cjk && !tight_cluster && !pt.trim().is_empty() && !ct.trim().is_empty();
                 }
@@ -1581,6 +1607,38 @@ mod tests {
         let mut v = Vec::new();
         word(&mut v, "每个字", 10.0, 10.0, 9.0);
         assert_eq!(layout(v).plain_text(), "每个字");
+    }
+
+    #[test]
+    fn decomposed_hangul_matches_typed_syllables() {
+        let mut v = Vec::new();
+        // "한글" stored as conjoining jamo, one glyph each.
+        word(&mut v, "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}", 10.0, 10.0, 2.0);
+        let t = layout(v);
+        assert_eq!(t.find_opts("한글", false, false).len(), 1);
+        let mut v = Vec::new();
+        word(&mut v, "한글", 10.0, 10.0, 6.5);
+        assert_eq!(layout(v).find_opts("한글", false, false), vec![0..2]);
+        assert_eq!(hangul_jamo('A').collect::<String>(), "A");
+        assert_eq!(hangul_jamo('가').count(), 2);
+        assert_eq!(hangul_jamo('힣').count(), 3);
+    }
+
+    /// Achmage PDFCraft: Korean word gaps drawn as positioning (no space glyph, as HWP and Word
+    /// exports do) become spaces; syllables set close together stay one word.
+    #[test]
+    fn korean_word_gaps_become_spaces() {
+        let mut v = Vec::new();
+        word(&mut v, "안녕하세요", 10.0, 10.0, 6.5);
+        word(&mut v, "여러분", 10.0 + 5.0 * 6.5 + 3.0, 10.0, 6.5);
+        assert_eq!(layout(v).plain_text(), "안녕하세요 여러분");
+        let mut v = Vec::new();
+        word(&mut v, "한국어", 10.0, 10.0, 6.5);
+        word(&mut v, "漢字", 10.0 + 3.0 * 6.5 + 3.0, 10.0, 6.5);
+        assert_eq!(layout(v).plain_text(), "한국어 漢字");
+        let mut v = Vec::new();
+        word(&mut v, "띄어쓰기없음", 10.0, 10.0, 6.5);
+        assert_eq!(layout(v).plain_text(), "띄어쓰기없음");
     }
 
     /// #1062: the word gap stays between the runs when the right-hand run is drawn first, and

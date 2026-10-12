@@ -215,6 +215,9 @@ pub fn install_fonts_for(ctx: &egui::Context, cjk: CjkPreference) {
 pub const SYSTEM_FALLBACK: &str = "system-fallback";
 /// The name of the installed Devanagari (Hindi) face [`installed_font_definitions`] may add.
 pub const SYSTEM_DEVANAGARI_FALLBACK: &str = "system-devanagari-fallback";
+/// The name of the installed Korean face (Malgun Gothic, Apple SD Gothic Neo, Nanum Gothic, …)
+/// [`installed_font_definitions`] may add right after the bundled Pretendard and Inter.
+pub const SYSTEM_KOREAN_FALLBACK: &str = "system-korean-fallback";
 
 /// What [`install_fonts_for`] installs: [`font_definitions_for`], then, on desktop, one face
 /// already installed on this machine. It only draws characters no embedded face has.
@@ -237,6 +240,19 @@ pub fn installed_font_definitions(cjk: CjkPreference) -> FontDefinitions {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use crate::system_fonts::{Need, fallback};
+        // Right after the bundled Pretendard (and Inter, when it follows): it draws the Hanja of
+        // Korean text, while Latin stays in the app's own faces.
+        if let Some(data) = crate::system_fonts::korean_fallback() {
+            fonts.font_data.insert(SYSTEM_KOREAN_FALLBACK.to_owned(), data);
+            let pretendard: Vec<String> = pdfcraft_fonts::PRETENDARD.iter().map(|f| f.name()).collect();
+            for stack in fonts.families.values_mut() {
+                let mut at = stack.iter().rposition(|n| pretendard.contains(n)).map_or(stack.len(), |i| i + 1);
+                if stack.get(at).is_some_and(|n| n.starts_with("Inter")) {
+                    at += 1;
+                }
+                stack.insert(at.min(stack.len()), SYSTEM_KOREAN_FALLBACK.to_owned());
+            }
+        }
         // Before the general installed face, which stays the last fallback outside Chinese.
         if let Some(data) = crate::system_fonts::devanagari_fallback() {
             fonts.font_data.insert(SYSTEM_DEVANAGARI_FALLBACK.to_owned(), data);
@@ -289,6 +305,16 @@ pub fn font_definitions_for(prefer_hans: bool) -> FontDefinitions {
     add(&mut fonts, "JetBrainsMono", include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"));
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "Inter".to_owned());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "JetBrainsMono".to_owned());
+    // Achmage PDFCraft: bundled Pretendard leads the interface (Korean, and Latin in Inter's
+    // design); Inter stays right after it for anything Pretendard lacks. Code keeps JetBrains
+    // Mono first, with Pretendard after it for Hangul.
+    for face in pdfcraft_fonts::PRETENDARD {
+        add(&mut fonts, &face.name(), face.bytes);
+    }
+    if let Some(regular) = pdfcraft_fonts::pretendard("Regular") {
+        fonts.families.entry(FontFamily::Proportional).or_default().insert(0, regular.name());
+        fonts.families.entry(FontFamily::Monospace).or_default().insert(1, regular.name());
+    }
     // The same static bytes pdfcraft-fonts uses for Japanese/Chinese text in PDFs: one copy, not two.
     for face in pdfcraft_fonts::ui_cjk_fonts(prefer_hans) {
         let name = face.name();
@@ -321,8 +347,9 @@ pub fn font_definitions_for(prefer_hans: bool) -> FontDefinitions {
         }
     }
     let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();
-    for (fam, primary) in [("medium", "Inter-Medium"), ("semibold", "Inter-SemiBold")] {
-        let mut stack = vec![primary.to_owned()];
+    for (fam, weight, primary) in [("medium", "Medium", "Inter-Medium"), ("semibold", "SemiBold", "Inter-SemiBold")] {
+        let mut stack: Vec<String> = pdfcraft_fonts::pretendard(weight).map(|f| f.name()).into_iter().collect();
+        stack.push(primary.to_owned());
         stack.extend(fallback.iter().cloned());
         fonts.families.insert(FontFamily::Name(fam.into()), stack);
     }

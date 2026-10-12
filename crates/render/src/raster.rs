@@ -69,7 +69,7 @@ impl RenderConfig {
         InterpreterSettings {
             ocg_overrides: self.layers.clone(),
             hide_comments: self.hide_comments,
-            font_resolver: Arc::new(move |query| japanese_fallback(query).or_else(|| standard(query))),
+            font_resolver: Arc::new(move |query| japanese_fallback(query).or_else(|| korean_fallback(query)).or_else(|| standard(query))),
             ..InterpreterSettings::default()
         }
     }
@@ -99,6 +99,19 @@ fn japanese_fallback(query: &FontQuery) -> Option<(FontData, u32)> {
             faces.iter().find(|c| c.family == "BIZ UDPGothic" && c.style == style).or(faces.first()).copied()
         }
     }?;
+    Some((Arc::new(face.bytes), 0))
+}
+
+/// Achmage PDFCraft: the bundled Pretendard for a CID font of the Adobe-Korea1 collection that
+/// the PDF doesn't embed (`HYSMyeongJo-Medium`, `HYGoThic-Medium`, Batang or Gulim set with a
+/// `KSC`/`UniKS` CMap, as Korean government and HWP-exported PDFs often are). Without it such
+/// text drew nothing. hayro maps the CIDs to Unicode with Adobe-Korea1-UCS2 for a substitute.
+fn korean_fallback(query: &FontQuery) -> Option<(FontData, u32)> {
+    let FontQuery::Fallback(f) = query else { return None };
+    if f.character_collection.as_ref()?.family != CidFamily::AdobeKorea1 {
+        return None;
+    }
+    let face = pdfcraft_fonts::pretendard(if f.is_bold || f.font_weight >= 600 { "Bold" } else { "Regular" })?;
     Some((Arc::new(face.bytes), 0))
 }
 
@@ -5169,6 +5182,36 @@ trailer << /Root 1 0 R >>
             // 日本 at 40 pt covers a few hundred dark pixels; a blank or missing-glyph run doesn't.
             assert!(inked > 300, "{base_font}: 日本 is drawn ({inked} dark pixels)");
         }
+    }
+
+    /// Achmage PDFCraft: a Korean CID font that isn't embedded (Adobe-Korea1, `HYSMyeongJo-Medium`
+    /// with `UniKS-UCS2-H`, as Korean government PDFs use) drew nothing; it draws in the bundled
+    /// Pretendard now.
+    #[test]
+    fn non_embedded_korean_cid_fonts_draw_with_pretendard() {
+        // 한글 in UCS-2.
+        let content = "BT /F1 40 Tf 5 15 Td <D55CAE00> Tj ET";
+        let pdf = format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 60] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type0 /BaseFont /HYSMyeongJo-Medium /Encoding /UniKS-UCS2-H /DescendantFonts [6 0 R] >> endobj
+6 0 obj << /Type /Font /Subtype /CIDFontType0 /BaseFont /HYSMyeongJo-Medium /CIDSystemInfo << /Registry (Adobe) /Ordering (Korea1) /Supplement 1 >>
+  /FontDescriptor 7 0 R /DW 1000 >> endobj
+7 0 obj << /Type /FontDescriptor /FontName /HYSMyeongJo-Medium /Flags 6 /FontBBox [0 -141 1000 859] /ItalicAngle 0 /Ascent 859 /Descent -141 /CapHeight 700 /StemV 80 >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            content.len()
+        );
+        let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0, ..Default::default() });
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let inked = p.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+        assert!(inked > 300, "한글 is drawn ({inked} dark pixels)");
     }
 
     /// Half-width katakana are common in Japanese documents set in a non-embedded Mincho font

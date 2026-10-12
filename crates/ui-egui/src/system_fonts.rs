@@ -27,6 +27,49 @@ const HANS_PROBE: char = '\u{6B22}';
 /// 說 (U+8AAA): Traditional only, absent from the Japanese craft-fonts faces.
 const HANT_PROBE: char = '\u{8AAA}';
 
+/// 한 (U+D55C): the face must have it to cover Korean.
+const HANGUL_PROBE: char = '\u{D55C}';
+
+/// The installed Korean face, read once (Achmage PDFCraft). It comes after the bundled
+/// Pretendard, so it draws what Pretendard lacks, chiefly the Hanja of Korean text. `None` when
+/// it is turned off or no candidate is installed.
+pub fn korean_fallback() -> Option<Arc<FontData>> {
+    static CACHE: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            if std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0") {
+                return None;
+            }
+            korean_candidates().iter().find_map(|path| read(path, HANGUL_PROBE, MAX_HAN_BYTES))
+        })
+        .clone()
+}
+
+/// Well-known locations of Korean faces, best first.
+fn korean_candidates() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        ["malgun.ttf", "gulim.ttc", "batang.ttc"].iter().map(|f| windows_fonts().join(f)).collect()
+    } else if cfg!(target_os = "macos") {
+        ["/System/Library/Fonts/AppleSDGothicNeo.ttc", "/System/Library/Fonts/Supplemental/AppleGothic.ttf", "/Library/Fonts/AppleGothic.ttf"]
+            .iter()
+            .map(PathBuf::from)
+            .collect()
+    } else {
+        unix_fonts(&[
+            "TTF/NanumGothic.ttf",
+            "naver-nanum/NanumGothic.ttf",
+            "nanum/NanumGothic.ttf",
+            "truetype/nanum/NanumGothic.ttf",
+            "nanum-fonts/NanumGothic.ttf",
+            "noto-cjk/NotoSansCJK-Regular.ttc",
+            "opentype/noto/NotoSansCJK-Regular.ttc",
+            "google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "truetype/unfonts-core/UnDotum.ttf",
+            "baekmuk/gulim.ttf",
+        ])
+    }
+}
+
 /// What the installed face is wanted for, from the interface language.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Need {
@@ -242,6 +285,9 @@ mod tests {
             assert!(!list.is_empty(), "{need:?}");
             assert!(list.iter().all(|p| p.extension().is_some_and(|e| e == "ttf" || e == "ttc")), "{need:?}");
         }
+        let korean = korean_candidates();
+        assert!(!korean.is_empty());
+        assert!(korean.iter().all(|p| p.extension().is_some_and(|e| e == "ttf" || e == "ttc")));
     }
 
     #[test]

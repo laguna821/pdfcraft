@@ -1246,6 +1246,24 @@ fn comment_text_the_standard_fonts_cannot_draw_is_kept_and_marked() {
     assert_eq!(text(&list(&doc, 0)[t], b"Contents"), "签名");
 }
 
+/// Achmage PDFCraft: a text box in Korean is drawn from the bundled Pretendard's outlines (filled
+/// paths, no `?`) and isn't marked as undrawn; its text stays in `/Contents`.
+#[test]
+fn korean_text_boxes_are_drawn_from_pretendard_outlines() {
+    let mut doc = fixture();
+    let mut boxed = new(0, Shape::TextBox { rect: [100.0, 600.0, 300.0, 650.0], font_size: 12.0 });
+    boxed.contents = "한글 메모 Memo 2026".into();
+    let t = add_annotation(&mut doc, &boxed, &meta("t")).unwrap();
+    let d = &list(&doc, 0)[t];
+    assert_eq!(text(d, b"Contents"), "한글 메모 Memo 2026");
+    assert_eq!(pdfcraft_fonts::undrawn_mark(d), None);
+    let ap = ap_content(&doc, d);
+    assert!(!ap.contains('?'), "{ap}");
+    assert!(ap.matches(" m\n").count() > 10 && ap.contains("f\n"), "glyph outlines are filled");
+    assert!(!appearance::outline_text("Zürich"), "Western European text keeps Helvetica");
+    assert!(appearance::outline_text("가나다"));
+}
+
 /// Content edits rebuild the display copy on every commit but leave annotations alone: the
 /// cached appearance is drawn once and reused after that, byte-identical.
 #[test]

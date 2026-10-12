@@ -119,8 +119,18 @@ impl Type0Font {
         let mut to_unicode = read_to_unicode(dict, cmap_resolver);
         let mut to_unicode_is_cid_indexed = false;
 
+        // PdfCraft patch (Achmage PDFCraft): an embedded font whose encoding CMap is a named
+        // Adobe-Korea1 CMap (KSC-EUC-H, KSCms-UHC-H, UniKS-UCS2-H, ...) shows Korea1 CIDs, so
+        // Adobe-Korea1-UCS2 gives their text even without a ToUnicode map, as Korean
+        // government and HWP-exported PDFs often have.
+        let named_korea1 = cmap
+            .metadata()
+            .character_collection
+            .as_ref()
+            .is_some_and(|cc| cc.family == CidFamily::AdobeKorea1);
+
         // If there is no ToUnicode map, try to get the UCS2 CMap.
-        if fallback
+        if (fallback || named_korea1)
             && to_unicode.is_none()
             && let Some(cc) = character_collection.as_ref()
             && let Some(ucs2_name) = cc.family.ucs2_cmap()

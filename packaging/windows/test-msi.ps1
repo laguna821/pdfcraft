@@ -35,7 +35,7 @@ function Assert-NoRow([string] $Sql, [string] $What) {
 # Test the compiled condition with Windows Installer's evaluator, in a restricted session that
 # cannot change machine state. Normal installs/repairs work, per-user overrides fail, and removal
 # of an older incorrectly scoped installation remains possible (#305).
-$scopeMessage = 'PdfCraft must be installed for all users. Run setup with administrator privileges and ALLUSERS=1; per-user installation is not supported.'
+$scopeMessage = 'Achmage PDFCraft must be installed for all users. Run setup with administrator privileges and ALLUSERS=1; per-user installation is not supported.'
 $scopeCondition = Read-Row ('SELECT `Condition` FROM `LaunchCondition` WHERE `Description` = ''' + $scopeMessage + '''') 1
 $Installer.UILevel = 2
 $session = $null
@@ -106,9 +106,9 @@ Assert-Equal $scope[0] '1' 'Per-machine shortcut scope'
 # Image context menu opens the DPI chooser; the app component owns every registry row so
 # uninstall removes it. No image default association is changed.
 foreach ($ext in @('png', 'jpg', 'jpeg', 'tif', 'tiff', 'gif', 'bmp', 'jp2', 'j2k', 'jpx')) {
-  $key = 'Software\Classes\SystemFileAssociations\.' + $ext + '\shell\PdfCraft.CreatePdf'
+  $key = 'Software\Classes\SystemFileAssociations\.' + $ext + '\shell\AchmagePDFCraft.CreatePdf'
   $menu = Read-Row ('SELECT `Value`, `Component_`, `Root` FROM `Registry` WHERE `Key` = ''' + $key + ''' AND `Name` IS NULL') 3
-  Assert-Equal $menu[0] 'Create PDF with PdfCraft…' "$ext context menu label"
+  Assert-Equal $menu[0] 'Create PDF with Achmage PDFCraft…' "$ext context menu label"
   Assert-Equal $menu[1] 'PdfcraftApp' "$ext context menu component"
   Assert-Equal $menu[2] '2' "$ext context menu HKLM root"
   $command = Read-Row ('SELECT `Value` FROM `Registry` WHERE `Key` = ''' + $key + '\command''') 1
@@ -117,14 +117,14 @@ foreach ($ext in @('png', 'jpg', 'jpeg', 'tif', 'tiff', 'gif', 'bmp', 'jp2', 'j2
   Assert-Equal $selection[0] 'Single' "$ext context menu selection"
 }
 
-# PDF context menu (#682): "Edit with PdfCraft" opens the file in PdfCraft. Its own component, gated
+# PDF context menu (#682): "Edit with Achmage PDFCraft" opens the file in AchmagePDFCraft. Its own component, gated
 # by INSTALLPDFCONTEXTMENU (default 1, secure, welcome checkbox), with its menu value as key path so
 # uninstall removes it. Several selected PDFs each start pdfcraft.exe "%1" (Document), which the
 # single-instance hand-off opens as tabs. The .pdf default is never set, so the user's default app
 # stays.
-$pdfKey = 'Software\Classes\SystemFileAssociations\.pdf\shell\PdfCraft.Edit'
+$pdfKey = 'Software\Classes\SystemFileAssociations\.pdf\shell\AchmagePDFCraft.Edit'
 $pdfMenu = Read-Row ('SELECT `Registry`, `Value`, `Component_`, `Root` FROM `Registry` WHERE `Key` = ''' + $pdfKey + ''' AND `Name` IS NULL') 4
-Assert-Equal $pdfMenu[1] 'Edit with PdfCraft' 'PDF context menu label'
+Assert-Equal $pdfMenu[1] 'Edit with Achmage PDFCraft' 'PDF context menu label'
 Assert-Equal $pdfMenu[2] 'PdfcraftPdfContextMenu' 'PDF context menu component'
 Assert-Equal $pdfMenu[3] '2' 'PDF context menu HKLM root'
 foreach ($value in @(@('Icon', '"[#PdfcraftExe]",0'), @('MultiSelectModel', 'Document'))) {
@@ -144,7 +144,7 @@ if (($secure[0] -split ';') -notcontains 'INSTALLPDFCONTEXTMENU') { throw "INSTA
 $pdfCheckbox = Read-Row 'SELECT `Type`, `Property`, `Text` FROM `Control` WHERE `Dialog_` = ''InstallWelcome'' AND `Control` = ''PdfContextMenu''' 3
 Assert-Equal $pdfCheckbox[0] 'CheckBox' 'Welcome PDF context-menu control'
 Assert-Equal $pdfCheckbox[1] 'INSTALLPDFCONTEXTMENU' 'Welcome PDF context-menu property'
-if ($pdfCheckbox[2] -notmatch 'Edit with PdfCraft') { throw "Welcome PDF context-menu label: '$($pdfCheckbox[2])'" }
+if ($pdfCheckbox[2] -notmatch 'Edit with Achmage PDFCraft') { throw "Welcome PDF context-menu label: '$($pdfCheckbox[2])'" }
 $pdfChecked = Read-Row 'SELECT `Value` FROM `CheckBox` WHERE `Property` = ''INSTALLPDFCONTEXTMENU''' 1
 Assert-Equal $pdfChecked[0] '1' 'Welcome PDF context-menu value'
 Assert-NoRow 'SELECT `Registry` FROM `Registry` WHERE `Key` = ''Software\Classes\.pdf'' AND `Name` IS NULL' '.pdf default app'

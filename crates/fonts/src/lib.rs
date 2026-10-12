@@ -8,19 +8,24 @@
 mod craft;
 pub mod embedding;
 mod encodings;
+mod korean;
 pub mod pdf;
 mod script;
 mod shaping;
 pub mod source_shaping;
 pub use craft::{
-    CRAFT_FONTS, CraftFont, SHIPPORI_MINCHO, document_arabic_font, document_hebrew_font, document_japanese_font, document_japanese_font_for_style,
-    document_japanese_fonts_for_style, document_thai_font, ui_arabic_fonts, ui_chinese_fonts, ui_cjk_fonts, ui_hebrew_fonts, ui_japanese_fonts,
-    ui_telugu_fonts, ui_thai_fonts,
+    CRAFT_FONTS, CraftFont, PRETENDARD, SHIPPORI_MINCHO, document_arabic_font, document_hebrew_font, document_japanese_font,
+    document_japanese_font_for_style, document_japanese_fonts_for_style, document_korean_fonts_for_style, document_thai_font, pretendard,
+    system_korean_face, ui_arabic_fonts, ui_chinese_fonts, ui_cjk_fonts, ui_hebrew_fonts, ui_japanese_fonts, ui_korean_fonts, ui_telugu_fonts,
+    ui_thai_fonts,
 };
+pub use korean::{korean_outline_path, korean_outline_width, korean_outlines_cover, needs_korean_outlines};
 pub use script::{
     GlyphError, GlyphOutline, INTER_REGULAR, MAX_SIGNATURE_CHARS, ScriptOutline, japanese_glyph, japanese_glyph_from, script_missing, script_outline,
 };
-pub use shaping::{ShapedCluster, ShapedScript, arabic_glyph, arabic_has, shape_arabic, shape_thai, shaped_glyph, thai_has};
+pub use shaping::{
+    ShapedCluster, ShapedScript, arabic_glyph, arabic_has, korean_has, shape_arabic, shape_korean, shape_thai, shaped_glyph, thai_has,
+};
 
 /// Approximate advance of `s` in Helvetica (or Arial) at `size` points.
 pub fn helvetica_width(s: &str, size: f64) -> f64 {

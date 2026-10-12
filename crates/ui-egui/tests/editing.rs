@@ -2333,6 +2333,54 @@ fn editing_existing_text_in_place() {
     assert_eq!(texts_of(s, 0), ["Chapter One"], "the page shows it");
 }
 
+/// Achmage PDFCraft: Hangul composed through the IME (as the Microsoft, macOS and fcitx5
+/// Korean input methods send it) lands in the Edit text field, is drawn with real glyphs (the
+/// bundled Pretendard, not tofu), and applies into the PDF.
+#[test]
+fn korean_ime_composition_edits_existing_text() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let at = egui::pos2(r.left() + 40.0 / 200.0 * r.width(), r.top() + (300.0 - 158.0) / 300.0 * r.height());
+    h.hover_at(at);
+    h.run_steps(1);
+    h.drag_at(at);
+    h.run_steps(1);
+    h.drop_at(at);
+    h.run_steps(4);
+    assert!(h.state().views[0].line_editor.is_some(), "the line opens for editing");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowRight);
+    h.run_steps(1);
+    use egui::{Event, ImeEvent};
+    for (preedit, commit) in [("ㅎ", None), ("하", None), ("한", None), ("ㄱ", Some("한")), ("그", None), ("글", None), ("", Some("글"))] {
+        if let Some(c) = commit {
+            h.event(Event::Ime(ImeEvent::Commit(c.into())));
+            h.run_steps(1);
+        }
+        if !preedit.is_empty() {
+            let n = preedit.chars().count();
+            h.event(Event::Ime(ImeEvent::Preedit { text: preedit.into(), active_range_chars: Some(n..n) }));
+            h.run_steps(1);
+        }
+    }
+    h.run_steps(2);
+    let text = h.state().views[0].line_editor.as_ref().expect("still editing").text.clone();
+    assert_eq!(text, "Page 1한글", "composed syllables are committed once each");
+    let drawable = h.ctx.fonts(|f| {
+        let defs = f.definitions().clone();
+        let mut fonts = egui::epaint::text::Fonts::new(egui::epaint::text::TextOptions::default(), defs);
+        fonts.has_glyphs(&egui::FontId::proportional(14.0), "한글 편집")
+    });
+    assert!(drawable, "the interface draws Hangul");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run_steps(4);
+    let s = h.state();
+    let doc = s.session.get(s.views[0].id).unwrap();
+    assert_eq!(doc.can_undo(), Some("Edit text"));
+    assert_eq!(doc.text_lines(0)[0].text, "Page 1한글");
+}
+
 /// One page whose only line is drawn twice at the same spot (fake bold, as many generated
 /// documents do).
 fn double_drawn() -> Vec<u8> {

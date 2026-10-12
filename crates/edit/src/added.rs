@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 use pdfcraft_fonts::{
-    GlyphError, GlyphOutline, ShapedCluster, ShapedScript, helvetica_width, literal, shape_arabic, shape_thai, shaped_glyph, win_ansi,
+    GlyphError, GlyphOutline, ShapedCluster, ShapedScript, helvetica_width, korean_has, literal, shape_arabic, shape_korean, shape_thai,
+    shaped_glyph, win_ansi,
 };
 use unicode_bidi::{Level, ParagraphBidiInfo};
 
@@ -228,6 +229,9 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
     for para in t.text.split('\n') {
         let arabic = para.chars().any(is_arabic);
         let thai = para.chars().any(is_thai);
+        // Achmage PDFCraft: Korean paragraphs wrap between words, measured with the shaped
+        // Pretendard glyphs.
+        let korean = !arabic && !thai && para.chars().any(is_korean);
         if thai
             && !arabic
             && let Ok(lines) = thai_lines(t, para, width)
@@ -240,13 +244,16 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
         // sum of its words' and shaping stays linear in the paragraph's length. The space is the
         // paragraph's; a space between Latin words is drawn in the item's font, a few hundredths
         // of an em apart.
-        let measure = |s: &str| if arabic || thai { shaped_width(t, s, rtl) } else { t.family.width(s, t.size, t.bold) };
+        let measure = |s: &str| if arabic || thai || korean { shaped_width(t, s, rtl) } else { t.family.width(s, t.size, t.bold) };
         let space = measure(" ");
         let (mut line, mut line_w) = (String::new(), 0.0);
         for word in para.split(' ') {
             let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
-            let candidate_w =
-                if arabic || thai { if line.is_empty() { measure(word) } else { line_w + space + measure(word) } } else { measure(&candidate) };
+            let candidate_w = if arabic || thai || korean {
+                if line.is_empty() { measure(word) } else { line_w + space + measure(word) }
+            } else {
+                measure(&candidate)
+            };
             if !line.is_empty() && candidate_w > width {
                 out.push((std::mem::take(&mut line), rtl));
                 line = word.to_string();
@@ -294,6 +301,12 @@ fn is_thai(c: char) -> bool {
     matches!(u32::from(c), 0x0E00..=0x0E7F)
 }
 
+/// Achmage PDFCraft: Hangul, or a character outside WinAnsi that the bundled Pretendard draws
+/// (CJK punctuation, symbols). An item with any of them is drawn with Pretendard.
+fn is_korean(c: char) -> bool {
+    crate::text::is_hangul(c) || (!pdfcraft_fonts::win_ansi_encodable(c) && !is_thai(c) && !is_arabic(c) && c != '\n' && korean_has(c))
+}
+
 /// Arabic letters, marks, digits and punctuation: an item with any of them is shaped with the
 /// craft-fonts Arabic face.
 fn is_arabic(c: char) -> bool {
@@ -304,6 +317,10 @@ fn is_arabic(c: char) -> bool {
 /// with the craft-fonts Arabic face (#125), or Arabic that the face can't draw (or that has no
 /// face to draw it). Page-content tools refuse such text; the Add-text editor keeps it open.
 pub fn first_undrawable(t: &AddedText) -> Option<char> {
+    // Achmage PDFCraft: Korean text is drawn with Pretendard, Latin and all.
+    if t.text.chars().any(is_korean) && !t.text.chars().any(|c| is_thai(c) || is_arabic(c)) {
+        return t.text.chars().find(|c| *c != '\n' && !korean_has(*c) && !pdfcraft_fonts::win_ansi_encodable(*c));
+    }
     if t.text.chars().any(is_thai) {
         if let Some(c) = t.text.chars().find(|c| is_thai(*c) && !pdfcraft_fonts::thai_has(*c)) {
             return Some(c);
@@ -374,6 +391,10 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
     let info = ParagraphBidiInfo::new(line, Some(base));
     let (levels, runs) = info.visual_runs(0..line.len());
     let mut pieces = Vec::new();
+    // Achmage PDFCraft: a line with Korean draws everything Pretendard has in Pretendard, so the
+    // line keeps one look (Latin, digits and spaces too).
+    let korean_line = line.chars().any(is_korean) && !line.chars().any(|c| is_thai(c) || is_arabic(c));
+    let korean_script = if t.bold { ShapedScript::KoreanBold } else { ShapedScript::Korean };
     for run in runs {
         let run_rtl = levels.get(run.start).is_some_and(Level::is_rtl);
         // Runs lie on character boundaries; a missing slice is skipped, never a panic.
@@ -382,7 +403,9 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
         // shaper then mirrors. Latin text (and what the face lacks) keeps the item's font.
         let mut segments: Vec<(Option<ShapedScript>, String)> = Vec::new();
         for c in text.chars().filter(|c| !is_bidi_control(*c)) {
-            let script = if is_thai(c) {
+            let script = if korean_line && (is_korean(c) || korean_has(c)) {
+                Some(korean_script)
+            } else if is_thai(c) {
                 Some(ShapedScript::Thai)
             } else if is_arabic(c) || (run_rtl && !c.is_alphanumeric() && pdfcraft_fonts::arabic_has(c)) {
                 Some(ShapedScript::Arabic)
@@ -402,6 +425,9 @@ fn shaped_layout(t: &AddedText, line: &str, rtl: bool) -> Result<(Vec<Piece>, f6
                 let shaped = match script {
                     ShapedScript::Arabic => shape_arabic(&s, run_rtl).map_err(|e| arabic_error(e, &s))?,
                     ShapedScript::Thai => shape_thai(&s).map_err(|e| thai_error(e, &s))?,
+                    ShapedScript::Korean | ShapedScript::KoreanBold => {
+                        shape_korean(&s, script == ShapedScript::KoreanBold).map_err(|e| korean_error(e, &s))?
+                    }
                 };
                 Piece::Shaped(shaped)
             } else if run_rtl {
@@ -434,6 +460,14 @@ fn arabic_error(e: GlyphError, text: &str) -> EditError {
             .into(),
         GlyphError::Missing => format!("the Arabic font can't show \"{text}\""),
         GlyphError::TooComplex => format!("the Arabic font's glyphs for \"{text}\" are too complex"),
+    })
+}
+
+fn korean_error(e: GlyphError, text: &str) -> EditError {
+    EditError::Invalid(match e {
+        GlyphError::NoFont => "Korean text needs the bundled Pretendard font, which this build is missing".into(),
+        GlyphError::Missing => format!("the Pretendard font can't show \"{text}\""),
+        GlyphError::TooComplex => format!("the Pretendard glyphs for \"{text}\" are too complex"),
     })
 }
 
@@ -512,6 +546,7 @@ fn draw_laid_shaped(
                 entry.insert(outline(c.script, *id).map_err(|e| match c.script {
                     ShapedScript::Arabic => arabic_error(e, &c.text),
                     ShapedScript::Thai => thai_error(e, &c.text),
+                    ShapedScript::Korean | ShapedScript::KoreanBold => korean_error(e, &c.text),
                 })?);
             }
         }
@@ -646,6 +681,7 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
             match script {
                 ShapedScript::Arabic => "Arabic",
                 ShapedScript::Thai => "Thai",
+                ShapedScript::Korean | ShapedScript::KoreanBold => "Pretendard",
             },
             |f| f.family,
         ),
@@ -697,7 +733,10 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
             }
             let mut fonts = Dict::new();
             fonts.set(name.clone().into_bytes(), Object::Dict(font));
-            if t.text.chars().any(is_thai) || (t.text.chars().any(is_arabic) && (pdfcraft_fonts::document_arabic_font().is_some() || !existing)) {
+            if t.text.chars().any(is_thai)
+                || t.text.chars().any(is_korean)
+                || (t.text.chars().any(is_arabic) && (pdfcraft_fonts::document_arabic_font().is_some() || !existing))
+            {
                 draw_shaped(doc, t, taken, &mut fonts, &mut out)?;
                 res.set(b"Font".to_vec(), Object::Dict(fonts));
                 out.extend_from_slice(b"Q\n");

@@ -189,6 +189,118 @@ const fn find(family: &str, style: &str) -> Option<&'static [u8]> {
     None
 }
 
+/// Achmage PDFCraft: Pretendard (OFL-1.1, <https://github.com/orioncactus/pretendard>), always
+/// bundled. It is the interface's primary face (its Latin is Inter's design) and the face for
+/// Korean text written into PDFs. The web build carries the Regular weight only.
+#[cfg(not(target_arch = "wasm32"))]
+pub static PRETENDARD: &[CraftFont] = &[
+    CraftFont { family: "Pretendard", style: "Regular", scripts: KORE_LATN, bytes: include_bytes!("../../../assets/fonts/Pretendard-Regular.ttf") },
+    CraftFont { family: "Pretendard", style: "Medium", scripts: KORE_LATN, bytes: include_bytes!("../../../assets/fonts/Pretendard-Medium.ttf") },
+    CraftFont { family: "Pretendard", style: "SemiBold", scripts: KORE_LATN, bytes: include_bytes!("../../../assets/fonts/Pretendard-SemiBold.ttf") },
+    CraftFont { family: "Pretendard", style: "Bold", scripts: KORE_LATN, bytes: include_bytes!("../../../assets/fonts/Pretendard-Bold.ttf") },
+];
+#[cfg(target_arch = "wasm32")]
+pub static PRETENDARD: &[CraftFont] = &[CraftFont {
+    family: "Pretendard",
+    style: "Regular",
+    scripts: KORE_LATN,
+    bytes: include_bytes!("../../../assets/fonts/Pretendard-Regular.ttf"),
+}];
+
+const KORE_LATN: &[&str] = &["Kore", "Latn"];
+
+/// A bundled Pretendard weight (`"Regular"`, `"Medium"`, `"SemiBold"`, `"Bold"`), else Regular
+/// (the web build has only Regular).
+pub fn pretendard(style: &str) -> Option<&'static CraftFont> {
+    PRETENDARD.iter().find(|f| f.style == style).or_else(|| PRETENDARD.first())
+}
+
+/// The interface faces for Korean text: every bundled Pretendard weight, then any `Kore`
+/// craft-fonts face.
+pub fn ui_korean_fonts() -> Vec<&'static CraftFont> {
+    PRETENDARD.iter().chain(CRAFT_FONTS.iter().filter(|f| f.covers("Kore"))).collect()
+}
+
+/// Faces for Korean text written into PDFs, best match for the weight first: the bundled
+/// Pretendard (sans; a serif document still gets Pretendard, no Korean serif is bundled), then
+/// any `Kore` craft-fonts face. Never empty.
+pub fn document_korean_fonts_for_style(_serif: bool, bold: bool) -> Vec<&'static CraftFont> {
+    let mut out: Vec<&'static CraftFont> = Vec::new();
+    for face in pretendard(if bold { "Bold" } else { "Regular" })
+        .into_iter()
+        .chain(pretendard("Regular"))
+        .chain(CRAFT_FONTS.iter().filter(|f| f.covers("Kore")))
+        // Last: the installed Korean face (Malgun Gothic, Apple Gothic, Nanum Gothic), for what
+        // Pretendard lacks, chiefly Hanja. Only its glyph outlines go into the PDF.
+        .chain(system_korean_face())
+    {
+        if !out.iter().any(|f| std::ptr::eq(*f, face)) {
+            out.push(face);
+        }
+    }
+    out
+}
+
+/// The installed Korean face that may lend glyph outlines to PDF text, read once: a standalone
+/// TrueType file (not a collection) whose embedding permissions allow it. `None` on the web, when
+/// `PDFCRAFT_SYSTEM_FONTS=0`, or when none is installed.
+pub fn system_korean_face() -> Option<&'static CraftFont> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static FACE: std::sync::OnceLock<Option<CraftFont>> = std::sync::OnceLock::new();
+        FACE.get_or_init(load_system_korean).as_ref()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_system_korean() -> Option<CraftFont> {
+    use skrifa::MetadataProvider as _;
+    use skrifa::raw::TableProvider as _;
+    if std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0") {
+        return None;
+    }
+    let windows = std::env::var_os("WINDIR").map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from).join("Fonts");
+    let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
+        vec![windows.join("malgun.ttf")]
+    } else if cfg!(target_os = "macos") {
+        vec!["/System/Library/Fonts/Supplemental/AppleGothic.ttf".into(), "/Library/Fonts/AppleGothic.ttf".into()]
+    } else {
+        ["/usr/share/fonts", "/usr/local/share/fonts"]
+            .iter()
+            .flat_map(|d| {
+                [
+                    "TTF/NanumGothic.ttf",
+                    "naver-nanum/NanumGothic.ttf",
+                    "nanum/NanumGothic.ttf",
+                    "truetype/nanum/NanumGothic.ttf",
+                    "truetype/unfonts-core/UnDotum.ttf",
+                ]
+                .iter()
+                .map(move |f| std::path::Path::new(d).join(f))
+            })
+            .collect()
+    };
+    for path in candidates {
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() > 32 << 20 {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let ok =
+            skrifa::FontRef::new(&bytes).is_ok_and(|f| f.charmap().map('\u{D55C}').is_some() && !f.os2().is_ok_and(|t| t.fs_type() & 0x0002 != 0));
+        if ok {
+            // Read once per process and kept for its lifetime, like the embedded faces.
+            let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            return Some(CraftFont { family: "System Korean", style: "Regular", scripts: &["Kore", "Hani"], bytes });
+        }
+    }
+    None
+}
+
 /// Shippori Mincho Regular from craft-fonts, the preferred face for Japanese document text.
 /// `None` when PdfCraft was built without craft-fonts.
 pub static SHIPPORI_MINCHO: Option<&[u8]> = find("Shippori Mincho", "Regular");

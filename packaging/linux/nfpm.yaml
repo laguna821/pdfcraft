@@ -3,7 +3,7 @@
 # exports VERSION and NFPM_ARCH.
 #
 #   nfpm package -f packaging/linux/nfpm.yaml -p deb -t dist/release/
-name: pdfcraft
+name: achmage-pdfcraft
 arch: ${NFPM_ARCH}
 platform: linux
 version: ${VERSION}
@@ -13,9 +13,12 @@ release: 1
 section: graphics
 priority: optional
 maintainer: ${PDFCRAFT_MAINTAINER}
-vendor: Learning Machines LLC
-homepage: https://getartcraft.com/apps/pdfcraft
+vendor: Achmage (laguna821)
+homepage: https://github.com/laguna821/pdfcraft
 license: MIT OR Apache-2.0
+# Same file paths as upstream PdfCraft (/usr/bin/pdfcraft): one or the other.
+conflicts:
+  - pdfcraft
 description: |-
   Open-source, native PDF workbench: read, comment, fill and sign forms,
   organize, combine, split, edit, redact, protect and export PDFs.

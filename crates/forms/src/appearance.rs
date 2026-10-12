@@ -124,11 +124,14 @@ enum FontText {
     Simple(Box<Metrics>),
     /// A composite font with a predefined Unicode CMap.
     Unicode(UnicodeCMap),
+    /// Achmage PDFCraft: Korean drawn as the bundled Pretendard's outlines (no font).
+    Outline,
 }
 
 impl FontText {
     fn encode(&self, s: &str) -> Vec<u8> {
         match self {
+            Self::Outline => Vec::new(),
             Self::WinAnsi => win_ansi(s),
             // Selection checks every displayed string first; wrapping only removes line breaks.
             Self::Simple(metrics) => metrics.encode(&s.replace('\t', " ")).unwrap_or_default(),
@@ -138,6 +141,7 @@ impl FontText {
 
     fn can_encode(&self, s: &str) -> bool {
         match self {
+            Self::Outline => pdfcraft_fonts::korean_outlines_cover(s),
             Self::Simple(metrics) => metrics.encode(&s.replace('\t', " ")).is_some(),
             _ => true,
         }
@@ -148,6 +152,7 @@ impl FontText {
     /// [`field_appearance_drawn`], so that `?` is never silent (AGENTS.md §4).
     fn first_unencodable(&self, s: &str) -> Option<char> {
         match self {
+            Self::Outline => s.chars().find(|c| !matches!(c, '\n' | '\r') && !pdfcraft_fonts::korean_has(*c)),
             Self::WinAnsi => pdfcraft_fonts::first_undrawable(s),
             Self::Simple(metrics) => {
                 s.chars().map(|c| if c == '\t' { ' ' } else { c }).find(|c| metrics.encode(c.encode_utf8(&mut [0; 4])).is_none())
@@ -160,6 +165,7 @@ impl FontText {
         match self {
             Self::WinAnsi | Self::Simple(_) => helvetica_width(s, size),
             Self::Unicode(_) => cjk_width(s, size),
+            Self::Outline => pdfcraft_fonts::korean_outline_width(s, size),
         }
     }
 }
@@ -334,8 +340,15 @@ pub fn field_appearance_drawn(doc: &Document, f: &Field, w: &Widget, values: &[S
             enc.can_encode(&text)
         }
     };
+    // Achmage PDFCraft: Korean that Helvetica can't draw but the bundled Pretendard can.
+    let shown: Vec<&str> = if f.kind == FieldKind::List { f.options.iter().map(|(_, d)| d.as_str()).collect() } else { vec![text.as_str()] };
+    let outline_needed =
+        shown.iter().any(|s| pdfcraft_fonts::first_undrawable(s).is_some()) && shown.iter().all(|s| pdfcraft_fonts::korean_outlines_cover(s));
     let (font_name, font_obj, enc) = match dr_font(doc, &da.font).filter(|(_, enc)| can_show(enc)) {
         Some((o, enc)) => (da.font.clone(), o, enc),
+        // Achmage PDFCraft: Korean that neither the field's font nor Helvetica can show is drawn
+        // from the bundled Pretendard's outlines.
+        None if outline_needed => ("Helv".to_string(), helvetica(), FontText::Outline),
         None => ("Helv".to_string(), helvetica(), FontText::WinAnsi),
     };
     let width_of = |text: &str, size: f64| enc.width(text, size);
@@ -346,11 +359,18 @@ pub fn field_appearance_drawn(doc: &Document, f: &Field, w: &Widget, values: &[S
     let mut body: Vec<u8> = Vec::new();
     // The first character drawn that the font can't hold (drawn as `?`), for the caller to report.
     let mut unencodable: Option<char> = None;
+    // Glyph outlines (FontText::Outline), drawn after the text object, at the size in force.
+    let mut outlines = String::new();
+    let size_now = std::cell::Cell::new(da.size);
     let mut show = |body: &mut Vec<u8>, x: f64, y: f64, text: &str| {
         // A line break in a single-line value is a space, as in viewers (multiline text is split).
         let text: String = text.chars().map(|c| if matches!(c, '\n' | '\r') { ' ' } else { c }).collect();
         if unencodable.is_none() {
             unencodable = enc.first_unencodable(&text);
+        }
+        if let FontText::Outline = enc {
+            pdfcraft_fonts::korean_outline_path(&mut outlines, &text, x, y, size_now.get(), n);
+            return;
         }
         body.extend(format!("1 0 0 1 {} {} Tm ", n(x), n(y)).bytes());
         body.extend(literal(&enc.encode(&text)));
@@ -381,6 +401,7 @@ pub fn field_appearance_drawn(doc: &Document, f: &Field, w: &Widget, values: &[S
                 if values.contains(export) {
                     c.push_str(&format!("0.6 0.75 0.86 rg\n{} {} {} {} re f\n", n(bw), n(y - line), n(width - 2.0 * bw), n(line)));
                 }
+                size_now.set(size);
                 show(&mut body, pad, y - line + size * 0.25, display);
                 y -= line;
             }
@@ -400,6 +421,7 @@ pub fn field_appearance_drawn(doc: &Document, f: &Field, w: &Widget, values: &[S
                     if y < -size {
                         break;
                     }
+                    size_now.set(size);
                     show(&mut body, x_for(&line, size), y, &line);
                     y -= size * 1.15;
                 }
@@ -418,9 +440,11 @@ pub fn field_appearance_drawn(doc: &Document, f: &Field, w: &Widget, values: &[S
                     let cell = width / cells as f64;
                     for (i, ch) in text.chars().take(cells).enumerate() {
                         let s = ch.to_string();
+                        size_now.set(size);
                         show(&mut body, cell * i as f64 + (cell - width_of(&s, size)) / 2.0, y, &s);
                     }
                 } else {
+                    size_now.set(size);
                     show(&mut body, x_for(&text, size), y, &text);
                 }
             }
@@ -441,7 +465,12 @@ pub fn field_appearance_drawn(doc: &Document, f: &Field, w: &Widget, values: &[S
         .bytes(),
     );
     content.extend(body);
-    content.extend_from_slice(b"ET\nQ\nEMC\n");
+    content.extend_from_slice(b"ET\n");
+    if !outlines.is_empty() {
+        content.extend(format!("{}\n", da.color).bytes());
+        content.extend(outlines.bytes());
+    }
+    content.extend_from_slice(b"Q\nEMC\n");
     let mut fonts = Dict::new();
     fonts.set(font_name.into_bytes(), font_obj);
     let mut res = Dict::new();

@@ -1,14 +1,19 @@
 name: Release
 
+# Achmage PDFCraft: builds Windows, macOS and Linux packages and publishes them as a GitHub
+# Release. Push a tag `v<version>` matching `[workspace.package] version` in Cargo.toml:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# "Run workflow" (workflow_dispatch) builds everything as a dry run and keeps the files as
+# workflow artifacts without publishing. Nothing is signed (GitHub-only distribution); the
+# install scripts in install/ download with curl/PowerShell, so SmartScreen and Gatekeeper don't
+# block the result.
+
 on:
   push:
-    branches: [release]
+    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version override for a test run, e.g. 0.2.0-rc.1 (empty: Cargo.toml)"
-        type: string
-        default: ""
 
 permissions:
   contents: write
@@ -17,21 +22,216 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Optional build input: Japanese, Chinese, Arabic, Hebrew, Thai and Telugu UI faces.
+  CRAFT_FONTS_REF: 3d9ab3a132ed0eff457e424226a435a901da30d3
+
 jobs:
-  release:
-    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
-    uses: storytold/craft-common-actions/.github/workflows/release.yml@main
-    with:
-      app-name: pdfcraft
-      app-title: PdfCraft
-      craft-fonts-ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
-      version: ${{ inputs.version }}
-    secrets:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      date: ${{ steps.v.outputs.date }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Resolve version
+        shell: bash
+        run: |
+          . packaging/env.sh
+          v="$VERSION"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$v" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"
+            exit 1
+          fi
+          case "$v" in *-*) pre=true ;; *) pre=false ;; esac
+          { echo "version=$v"; echo "date=$(date -u +%Y-%m-%d)"; echo "prerelease=$pre"; } >>"$GITHUB_OUTPUT"
+          echo "### Achmage PDFCraft v$v (\`${GITHUB_SHA::9}\`)" >>"$GITHUB_STEP_SUMMARY"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      PDFCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      PDFCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PDFCRAFT_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows-x64
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g "WixToolset.UI.wixext/5.0.2" "WixToolset.Util.wixext/5.0.2"
+      - name: Build and package (MSI, portable zip)
+        shell: pwsh
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: ./packaging/windows/package.ps1 -Arch x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: dist/release/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    env:
+      PDFCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      PDFCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PDFCRAFT_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-universal
+      - name: Build and package (universal DMG, ad-hoc signed)
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: packaging/macos/package.sh --arch universal
+      - name: Zip the app for the install script
+        run: |
+          set -euo pipefail
+          v="${PDFCRAFT_VERSION}"
+          dmg="dist/release/achmage-pdfcraft-$v-macos-universal.dmg"
+          mnt="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg"
+          ditto -c -k --keepParent "$mnt/Achmage PDFCraft.app" "dist/release/achmage-pdfcraft-$v-macos-universal.app.zip"
+          hdiutil detach "$mnt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/release/*
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04, deb: amd64, nfpm_sha: 3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64, nfpm_sha: 27419eb382695a7942be8ad52259f3ec1854fad001b3ae4baed34ce39a223b97 }
+    env:
+      PDFCRAFT_VERSION: ${{ needs.version.outputs.version }}
+      PDFCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
+      PDFCRAFT_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+      - name: Install build and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            libgtk-3-dev desktop-file-utils appstream python3-yaml zsync
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_${{ matrix.deb }}.deb"
+          echo "${{ matrix.nfpm_sha }}  $RUNNER_TEMP/nfpm.deb" | sha256sum -c -
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux-${{ matrix.arch }}
+      - name: Build and package (tar.gz, deb, rpm, AppImage)
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+        run: packaging/linux/package.sh
+      - name: Smoke test
+        run: |
+          set -e
+          tar -C "$RUNNER_TEMP" -xzf dist/release/achmage-pdfcraft-${PDFCRAFT_VERSION}-linux-${{ matrix.arch }}.tar.gz
+          "$RUNNER_TEMP/achmage-pdfcraft-${PDFCRAFT_VERSION}-linux-${{ matrix.arch }}/bin/pdfcraft-cli" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  arch:
+    name: Arch PKGBUILD
+    needs: [version, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Fill in the PKGBUILD
+        run: |
+          set -euo pipefail
+          v="${{ needs.version.outputs.version }}"
+          sha() { sha256sum "dist/achmage-pdfcraft-$v-linux-$1.tar.gz" | cut -d' ' -f1; }
+          mkdir -p out
+          sed -e "s/@VERSION@/$v/" -e "s/@PKGVER@/${v//-/_}/" \
+              -e "s/@SHA256_X86_64@/$(sha x86_64)/" -e "s/@SHA256_AARCH64@/$(sha aarch64)/" \
+              packaging/arch/PKGBUILD.in > out/PKGBUILD
+          cat out/PKGBUILD
+      - name: Check it in an Arch container
+        run: |
+          docker run --rm -v "$PWD/out:/pkg" -v "$PWD/dist:/dist" archlinux:latest bash -euc '
+            pacman -Sy --noconfirm --needed base-devel >/dev/null
+            useradd -m builder && cp /pkg/PKGBUILD /home/builder/ && cp /dist/*-linux-x86_64.tar.gz /home/builder/ && chown -R builder /home/builder
+            su builder -c "cd ~ && makepkg --nodeps --noconfirm --skipinteg -f"
+            pacman -Qlp /home/builder/*.pkg.tar.zst | grep -E "usr/bin/pdfcraft$|applications/.*desktop"
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-arch
+          path: out/PKGBUILD
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, windows, macos, linux, arch]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: files
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          v="${{ needs.version.outputs.version }}"
+          cp install/install.sh install/install.ps1 files/
+          (cd files && sha256sum * > SHA256SUMS.txt)
+          notes="release-notes/$v.md"
+          [ -f "$notes" ] || notes=install/RELEASE-NOTES-TEMPLATE.md
+          pre=""
+          [ "${{ needs.version.outputs.prerelease }}" = "true" ] && pre="--prerelease"
+          gh release create "v$v" files/* --title "Achmage PDFCraft v$v" --notes-file "$notes" $pre
